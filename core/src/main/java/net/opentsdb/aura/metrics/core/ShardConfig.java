@@ -19,11 +19,13 @@ package net.opentsdb.aura.metrics.core;
 
 import net.opentsdb.aura.metrics.core.downsample.Interval;
 import net.opentsdb.aura.metrics.core.downsample.SegmentWidth;
+import net.opentsdb.core.TSDB;
 
 import java.util.List;
 
 public class ShardConfig {
 
+  public TSDB tsdb;
   public String namespace;
 
   public boolean lossy = true;

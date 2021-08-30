@@ -33,6 +33,6 @@ public class OffHeapTimeSeriesRecordFactory
   @Override
   public OffHeapTimeSeriesRecord create() {
     return new OffHeapTimeSeriesRecord(
-        segmentsInATimeSeries, secondsInASegment);
+        segmentsInATimeSeries, secondsInASegment, null);
   }
 }

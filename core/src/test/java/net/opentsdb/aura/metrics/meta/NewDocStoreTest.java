@@ -17,6 +17,7 @@
 
 package net.opentsdb.aura.metrics.meta;
 
+import com.google.common.collect.Lists;
 import net.opentsdb.aura.metrics.core.MemoryInfoReader;
 import net.opentsdb.aura.metrics.core.TimeSeriesShardIF;
 import net.opentsdb.aura.metrics.core.data.InSufficientBufferLengthException;
@@ -28,9 +29,11 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.roaringbitmap.RoaringBitmap;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.stream.Stream;
@@ -1052,6 +1055,41 @@ public class NewDocStoreTest {
     long[] idBatch = new long[]{-10, -100, 1000, 45454, 6454, 1, 2, 0, 0, 0, 0, 0, 0};
     Arrays.sort(idBatch, 0, idBatch.length);
     System.out.println(Arrays.toString(idBatch));
+  }
+
+  @Test
+  public void foo() throws Exception {
+    Random rnd = new Random(System.currentTimeMillis());
+    List<Integer> docs = Lists.newArrayList();
+    RoaringBitmap rr = new RoaringBitmap();
+    rr.runOptimize();
+    for (int i = 0; i < 1024 * 1024; i++) {
+      int doc = rnd.nextInt(2_000_000);
+      docs.add(i);
+      rr.add(i);
+    }
+
+    System.out.println("Cardinality: " + rr.getCardinality());
+    System.out.println("Size: " + rr.getSizeInBytes());
+    System.out.println("Size [L]: " + rr.getLongSizeInBytes());
+    System.out.println("Run comp? " + rr.hasRunCompression());
+
+    for (int i = 0; i < 1024 * 16; i++) {
+      int idx = rnd.nextInt(docs.size());
+      rr.remove(docs.get(i));
+    }
+
+    System.out.println("Removed some....");
+    System.out.println("Cardinality: " + rr.getCardinality());
+    System.out.println("Size: " + rr.getSizeInBytes());
+    System.out.println("Size [L]: " + rr.getLongSizeInBytes());
+
+    System.out.println(rr.runOptimize());
+    System.out.println("Compress? ....");
+    System.out.println("Cardinality: " + rr.getCardinality());
+    System.out.println("Size: " + rr.getSizeInBytes());
+    System.out.println("Size [L]: " + rr.getLongSizeInBytes());
+    System.out.println("Run comp? " + rr.hasRunCompression());
   }
 
   private Stream<Arguments> docStoreProvider() {

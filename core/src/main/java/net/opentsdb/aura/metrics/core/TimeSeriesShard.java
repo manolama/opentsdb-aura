@@ -41,6 +41,7 @@ import net.opentsdb.collections.LongLongHashTable;
 import net.opentsdb.collections.LongLongIterator;
 import net.opentsdb.data.LowLevelMetricData;
 import net.opentsdb.hashing.HashFunction;
+import net.opentsdb.utils.OffHeapDebugAllocator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,83 +69,85 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
   private static final Logger LOGGER = LoggerFactory.getLogger(TimeSeriesShard.class);
 
   public static final int PURGE_JOB_TIMEOUT_MS = 100;
-  private final ShardConfig shardConfig;
-  private final TimeseriesStorageContext storageContext;
-  private final HashFunction hashFunction;
+  protected final ShardConfig shardConfig;
+  protected final TimeseriesStorageContext storageContext;
+  protected final HashFunction hashFunction;
 
-  private final int secondsInASegment;
-  private final int secondsInATimeSeries;
-  private final int segmentsInATimeSeries;
+  protected final int secondsInASegment;
+  protected final int secondsInATimeSeries;
+  protected final int segmentsInATimeSeries;
 
-  private final int shardId;
-  private final RawTimeSeriesEncoder encoder;
-  private final LinkedBlockingQueue<Runnable> queue;
-  private final HashTable tagTable;
-  private final HashTable metricTable;
-  private final LongLongHashTable timeSeriesTable;
-  private final LongIntHashTable metaCountTable;
-  private final int retentionSeconds;
-  private final StorageMode storageMode;
+  protected final int shardId;
+  protected final RawTimeSeriesEncoder encoder;
+  protected final LinkedBlockingQueue<Runnable> queue;
+  protected final HashTable tagTable;
+  protected final HashTable metricTable;
+  protected final LongLongHashTable timeSeriesTable;
+  protected final LongIntHashTable metaCountTable;
+  protected final int retentionSeconds;
+  protected final StorageMode storageMode;
 
-  private final TimeSeriesRecord timeSeriesRecord;
+  protected final TimeSeriesRecord timeSeriesRecord;
 
-  private final MetaDataStore docStore;
+  protected final MetaDataStore docStore;
 
-  private Timer timeSeriesWriteTimer;
-  private Timer shardReadTimer;
-  private Counter timeSeriesWriteFailureCounter;
-  private Gauge dataPointCountGauge;
-  private Gauge metricLengthGauge;
-  private Gauge metricCountGauge;
-  private Gauge tagsetLengthGauge;
-  private Gauge tagsetCountGauge;
-  private Gauge metaRecordCountGauge;
-  private Gauge timeSeriesCountGauge;
-  private Counter timeSeriesDropCounter;
-  private Counter timeSeriesPurgeCounter;
-  private Timer timeSeriesPurgeTimer;
-  private Timer metaSearchTimer;
-  private Timer metaWriteTimer;
-  private Timer metaPurgeTimer;
-  private Counter metaPurgeFailureCounter;
-  private String[] tagSet;
-  private Flusher flusher;
-  private final ScheduledExecutorService scheduledExecutorService;
-  private MemoryInfoReader memoryInfoReader;
+  protected Timer timeSeriesWriteTimer;
+  protected Timer shardReadTimer;
+  protected Counter timeSeriesWriteFailureCounter;
+  protected Gauge dataPointCountGauge;
+  protected Gauge metricLengthGauge;
+  protected Gauge metricCountGauge;
+  protected Gauge tagsetLengthGauge;
+  protected Gauge tagsetCountGauge;
+  protected Gauge metaRecordCountGauge;
+  protected Gauge timeSeriesCountGauge;
+  protected Counter timeSeriesDropCounter;
+  protected Counter timeSeriesPurgeCounter;
+  protected Timer timeSeriesPurgeTimer;
+  protected Timer metaSearchTimer;
+  protected Timer metaWriteTimer;
+  protected Timer metaPurgeTimer;
+  protected Counter metaPurgeFailureCounter;
+  protected String[] tagSet;
+  protected Flusher flusher;
+  protected final ScheduledExecutorService scheduledExecutorService;
+  protected MemoryInfoReader memoryInfoReader;
 
-  private long dataPointCount = 0;
-  private long dataDropCount = 0;
-  private long timeSeriesCount = 0;
-  private long metricLengthBytes = 0;
-  private long tagsetLengthBytes = 0;
+  protected long dataPointCount = 0;
+  protected long dataDropCount = 0;
+  protected long timeSeriesCount = 0;
+  protected long metricLengthBytes = 0;
+  protected long tagsetLengthBytes = 0;
 
-  private final byte[] pointerBuffer = new byte[HashTable.valSz + 4];
-  private byte[] byteBuffer = new byte[8];
-  private long[] docIdBuffer = new long[8];
-  private ResultantPointerArray queryResult = new ResultantPointerArray(0);
-  private double memoryUsageLimit;
-  private int maxTagLength;
-  private int maxMetricLength;
-  private volatile PurgeJob purgeJob;
-  private final long[] docIdBatch; // = new long[DOCID_BATCH_SIZE]; // L2 cache aligned.
-  private final ReadWriteLock purgeLock = new ReentrantReadWriteLock();
-  private final Gate purgeFlushGate = new Gate();
+  protected final byte[] pointerBuffer = new byte[HashTable.valSz + 4];
+  protected byte[] byteBuffer = new byte[8];
+  protected long[] docIdBuffer = new long[8];
+  protected ResultantPointerArray queryResult = new ResultantPointerArray(0);
+  protected double memoryUsageLimit;
+  protected int maxTagLength;
+  protected int maxMetricLength;
+  protected volatile PurgeJob purgeJob;
+  protected final long[] docIdBatch; // = new long[DOCID_BATCH_SIZE]; // L2 cache aligned.
+  protected final ReadWriteLock purgeLock = new ReentrantReadWriteLock();
+  protected final Gate purgeFlushGate = new Gate();
+  OffHeapDebugAllocator allocator;
+  MetricRegistry metricRegistry;
 
   private final LinkedBlockingQueue<JobWrapper> gatedJobsQueue = new LinkedBlockingQueue<>();
 
   public TimeSeriesShard(
-      final int shardId,
-      final ShardConfig config,
-      final TimeseriesStorageContext storageContext,
-      final RawTimeSeriesEncoder encoder,
-      final MetaDataStore docStore,
-      final MemoryInfoReader memoryInfoReader,
-      final MetricRegistry metricRegistry,
-      final LocalDateTime purgeDateTime,
-      final HashFunction hashFunction,
-      final Flusher flusher,
-      final ScheduledExecutorService scheduledExecutorService) {
-
+          final int shardId,
+          final ShardConfig config,
+          final TimeseriesStorageContext storageContext,
+          final RawTimeSeriesEncoder encoder,
+          final MetaDataStore docStore,
+          final MemoryInfoReader memoryInfoReader,
+          final MetricRegistry metricRegistry,
+          final LocalDateTime purgeDateTime,
+          final HashFunction hashFunction,
+          final Flusher flusher,
+          final ScheduledExecutorService scheduledExecutorService) {
+allocator = new OffHeapDebugAllocator(config.tsdb, 6, "Shard_"+shardId);
     this.shardConfig = config;
     this.storageContext = storageContext;
     this.hashFunction = hashFunction;
@@ -155,6 +158,7 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
     this.encoder = encoder;
     this.queue = new LinkedBlockingQueue(config.queueSize);
     this.docStore = docStore;
+    this.metricRegistry = metricRegistry;
     this.tagSet =
         new String[] {"namespace", shardConfig.namespace, "shardId", String.valueOf(shardId)};
     this.flusher = flusher;
@@ -163,15 +167,15 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
     this.memoryInfoReader = memoryInfoReader;
     this.memoryUsageLimit = shardConfig.memoryUsageLimitPct;
     this.retentionSeconds = (int) TimeUnit.HOURS.toSeconds(shardConfig.retentionHour);
-    this.timeSeriesRecord = new OffHeapTimeSeriesRecord(segmentsInATimeSeries, secondsInASegment);
+    this.timeSeriesRecord = new OffHeapTimeSeriesRecord(segmentsInATimeSeries, secondsInASegment, allocator);
     this.storageMode = storageContext.getMode();
 
-    this.tagTable = new HashTable("TagTable" + shardId, shardConfig.tagTableSize);
-    this.metricTable = new HashTable("MetricTable" + shardId, shardConfig.metricTableSize);
+    this.tagTable = new HashTable("TagTable" + shardId, shardConfig.tagTableSize, allocator);
+    this.metricTable = new HashTable("MetricTable" + shardId, shardConfig.metricTableSize, allocator);
     this.timeSeriesTable =
-        new LongLongHashTable(shardConfig.timeSeriesTableSize, "TSTable" + shardId);
+        new LongLongHashTable(shardConfig.timeSeriesTableSize, "TSTable" + shardId, allocator);
     this.metaCountTable =
-        new LongIntHashTable(shardConfig.timeSeriesTableSize, "MetaCountTable" + shardId);
+        new LongIntHashTable(shardConfig.timeSeriesTableSize, "MetaCountTable" + shardId, allocator);
     this.docIdBatch = new long[shardConfig.metaPurgeBatchSize];
 
     this.shardReadTimer = metricRegistry.timer("shard.read.time");
@@ -363,6 +367,16 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
   }
 
   @Override
+  public MetricRegistry registry() {
+    return metricRegistry;
+  }
+
+  @Override
+  public String[] tagSet() {
+    return tagSet;
+  }
+
+  @Override
   public void submit(Runnable job) throws InterruptedException {
     queue.put(job);
   }
@@ -381,7 +395,8 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
     Memory.read(tagAddr, byteBuffer, 0, tagLen);
     // remove entry from tag table
     tagTable.resetSlot(slot);
-    Memory.free(tagAddr);
+    //Memory.free(tagAddr);
+    allocator.free(this, tagAddr);
     tagsetLengthBytes -= tagLen;
     return tagLen;
   }
@@ -441,7 +456,7 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
    */
   @Override
   public void purge() {
-    if(storageMode == EPHEMERAL) {
+    if (storageMode == EPHEMERAL) {
       if (purgeJob == null) {
         purgeJob = new PurgeJob();
         try {
@@ -458,21 +473,22 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
   public class PurgeJob implements Job {
 
     long start = timeSeriesPurgeTimer.start();
-    LongLongIterator tsIterator = timeSeriesTable.iterator();
+    volatile LongLongHashTable tsTableClone;
+    LongLongIterator tsIterator;
     int currentTimeInSeconds = (int) (System.currentTimeMillis() / 1000);
     int segmentPurgeCount = 0;
     int dpPurgeCount = 0;
     int metaPurgeCount = 0;
     int tsPurgeCount = 0;
     int rescheduleAttempts = 0;
-    final AtomicBoolean isPurgeDone = new AtomicBoolean(false);
+    int runs;
+    final AtomicBoolean isPurgeDone = new AtomicBoolean(true);
+
     void reschedule() {
       if (!queue.offer(this)) {
-        rescheduleAttempts++;
-        if (rescheduleAttempts > 1024) {
+        if (++rescheduleAttempts > 1024) {
           LOGGER.error("Tried to reschedule a purge on shard " + shardId + " too many times");
-          purgeJob = null;
-          isPurgeDone.set(true);
+          close();
           return;
         }
         scheduledExecutorService.schedule(() -> reschedule(), 1, TimeUnit.SECONDS);
@@ -481,15 +497,36 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
 
     @Override
     public void run() {
-      LOGGER.info("Purge job started for shard: {}", shardId);
+      try {
+        runs++;
+        runPurge();
+      } catch (Throwable t){
+        // Release lock and kill purge
+        LOGGER.error("Purge ran into an error:", t);
+        close();
+      }
+    }
+
+    public void runPurge() {
+      LOGGER.info("Purge job started for shard: {}@{} Runs {} SP {}, TSP {}",
+              shardId, (start / 1_000_000_000),
+              runs, segmentPurgeCount, tsPurgeCount);
+      if (tsTableClone == null) {
+        tsTableClone = (LongLongHashTable) timeSeriesTable.clone();
+        tsIterator = tsTableClone.iterator();
+      }
+      LOGGER.info("Purge job started for shard: {} Job {}", shardId, System.identityHashCode(this));
       long jobStart = System.currentTimeMillis();
       rescheduleAttempts = 0;
       Arrays.fill(docIdBatch, 0l);
       int batchSize = 0;
       while (tsIterator.hasNext()) {
         tsIterator.next();
-
         long tsAddress = tsIterator.value();
+        if (tsAddress == 0 || tsAddress == LongLongHashTable.NOT_FOUND) {
+          LOGGER.warn("Invalid address from iterator. WTF?", tsAddress);
+          continue;
+        }
         timeSeriesRecord.open(tsAddress);
 
         int lastTimestamp = timeSeriesRecord.getLastTimestamp();
@@ -536,8 +573,11 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
             metaCountTable.remove(tagKey);
           }
 
+          // NOTE: delete the record only AFTER we successfully remove it from the
+          // table so we don't have a dangling pointer in case something goes
+          // wrong with
+          timeSeriesTable.remove(tsIterator.key());
           timeSeriesRecord.delete();
-          tsIterator.remove(); // removes the entry from the table
           tsPurgeCount++;
         }
 
@@ -571,6 +611,7 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
         }
       }
 
+      long timeTaken = System.nanoTime() - start;
       timeSeriesPurgeTimer.stop(start, tagSet);
       timeSeriesPurgeCounter.inc(tsPurgeCount, tagSet);
       timeSeriesCount -= tsPurgeCount;
@@ -584,13 +625,14 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
       encoder.collectMetrics();
 
       LOGGER.info(
-          "Purged {} segments {} timeseries {} meta records for shardId {}",
+          "Purged {} segments {} timeseries {} meta records for shardId {} in {} runs for {} seconds",
           segmentPurgeCount,
           tsPurgeCount,
           metaPurgeCount,
-          shardId);
-      purgeJob = null;
-      isPurgeDone.set(true);
+          shardId,
+          runs,
+          ((double) timeTaken / 1_000_000_000D));
+      close();
     }
 
 
@@ -606,7 +648,22 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
 
     @Override
     public void close() {
-      //Do nothing
+      if (tsTableClone != null) {
+        if (!isPurgeDone.compareAndSet(false, true)) {
+          if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("Purge was already marked finished?",
+                    new RuntimeException("Call stack"));
+          }
+        } else {
+          tsTableClone.close();
+          tsTableClone = null;
+          new RuntimeException().printStackTrace();
+          tsIterator = null;
+        }
+      } else {
+        isPurgeDone.set(true);
+      }
+      purgeJob = null;
     }
 
     @Override
@@ -820,8 +877,10 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
     return tagTable.getPointer(tagKey, buffer);
   }
 
-  private void addTimeSeries(
-      final LowLevelMetricData.HashedLowLevelMetricData event, final int timestamp, final int segmentTime) {
+  protected void addTimeSeries(
+      final LowLevelMetricData.HashedLowLevelMetricData event,
+      final int timestamp,
+      final int segmentTime) {
     long seriesHash = event.timeSeriesHash();
     long tagKey = event.tagsSetHash();
     final double value;
@@ -926,4 +985,7 @@ public class TimeSeriesShard implements TimeSeriesShardIF {
     dataPointCount++;
   }
 
+  public OffHeapDebugAllocator allocator() {
+    return allocator;
+  }
 }

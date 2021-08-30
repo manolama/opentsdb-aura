@@ -17,6 +17,7 @@
 
 package net.opentsdb.aura.metrics.core.data;
 
+import net.opentsdb.collections.UnsafeHelper;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
@@ -27,25 +28,25 @@ import java.lang.reflect.Field;
  * Not aligned.
  */
 public class Memory {
-    public static final Unsafe unsafe;
+    public static final Unsafe unsafe = UnsafeHelper.unsafe;
 
-    static {
-        try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            unsafe = (Unsafe) f.get(null);
-        } catch (NoSuchFieldException|IllegalAccessException  e) {
-            throw new RuntimeException("Failed to get unsafe instance, are you running Oracle JDK?", e);
-        }
-    }
+//    static {
+//        try {
+//            Field f = Unsafe.class.getDeclaredField("theUnsafe");
+//            f.setAccessible(true);
+//            unsafe = (Unsafe) f.get(null);
+//        } catch (NoSuchFieldException|IllegalAccessException  e) {
+//            throw new RuntimeException("Failed to get unsafe instance, are you running Oracle JDK?", e);
+//        }
+//    }
 
     /**
      * WARNING: will not clear the memory - i.e. it can contain garbage
      * @return address
      */
-    public static long malloc(long size) {
-        return unsafe.allocateMemory(size);
-    }
+//    public static long malloc(long size) {
+//        return unsafe.allocateMemory(size);
+//    }
 
     /**
      *
@@ -69,9 +70,9 @@ public class Memory {
         unsafe.copyMemory(null, addr, buf, Unsafe.ARRAY_BYTE_BASE_OFFSET + offset, length);
     }
 
-    public static void free(long addr) {
-        unsafe.freeMemory(addr);
-    }
+//    public static void free(long addr) {
+//        unsafe.freeMemory(addr);
+//    }
 
     public static void write(long addr, long[] data, long length) {
         unsafe.copyMemory(data, Unsafe.ARRAY_LONG_BASE_OFFSET, null, addr, length);

@@ -19,6 +19,7 @@ package net.opentsdb.aura.metrics.meta;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import io.ultrabrew.metrics.Gauge;
 import net.opentsdb.aura.metrics.core.ShardAware;
 import net.opentsdb.aura.metrics.core.TimeSeriesShardIF;
 import net.opentsdb.aura.metrics.core.Util;
@@ -48,6 +49,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class NewDocStore implements MetaDataStore, ShardAware {
@@ -70,6 +72,13 @@ public class NewDocStore implements MetaDataStore, ShardAware {
   private final int maxCapacity;
   private volatile int currentIndex;
   private int size;
+  private long rrSizeBytes;
+  private long tagKeys;
+  private long tagKeyBytes;
+  private long tagValues;
+  private long tagValueBytes;
+  private long metrics;
+  private long metricBytes;
 
   private final DocStoreQuery queryRunner;
   private final SharedMetaResult shardMetaResults;
@@ -80,6 +89,17 @@ public class NewDocStore implements MetaDataStore, ShardAware {
   private final int[] indices; // = new int[DOCID_BATCH_SIZE]; // L2 cache aligned.
   private final long[] histo = new long[4];
   private boolean metaQueryEnabled;
+
+  private Gauge m_rrSizeBytes;
+  private Gauge m_tagKeys;
+  private Gauge m_tagKeyBytes;
+  private Gauge m_tagValues;
+  private Gauge m_tagValueBytes;
+  private Gauge m_metrics;
+  private Gauge m_metricBytes;
+  private Gauge m_freeDocs;
+  private Gauge m_maxDocId;
+  private Gauge m_tablesCount;
 
   public static final NewDocStore newInstance(final TimeSeriesShardIF shard, final boolean metaQueryEnabled) {
     return new NewDocStore(DEFAULT_INITIAL_CAPACITY, TimeSeriesShardIF.DOCID_BATCH_SIZE, shard, null, null, metaQueryEnabled);
@@ -130,6 +150,17 @@ public class NewDocStore implements MetaDataStore, ShardAware {
   @Override
   public void setShard(TimeSeriesShardIF shard) {
     this.shard = shard;
+
+    m_rrSizeBytes = shard.registry().gauge("docStore.bitmaps.size.bytes");
+    m_tagKeys = shard.registry().gauge("docStore.tagkey.count");
+    m_tagKeyBytes = shard.registry().gauge("docStore.tagkey.bytes");
+    m_tagValues = shard.registry().gauge("docStore.tagvalue.count");
+    m_tagValueBytes = shard.registry().gauge("docStore.tagvalue.bytes");
+    m_metrics = shard.registry().gauge("docStore.metric.count");
+    m_metricBytes = shard.registry().gauge("docStore.metric.bytes");
+    m_freeDocs = shard.registry().gauge("docStore.docIds.free");
+    m_maxDocId = shard.registry().gauge("docStore.docIds.max");
+    m_tablesCount = shard.registry().gauge("docStore.table.count");
   }
 
   public void add(final String[] tagKeys, final String[] tagValues, long key) {
@@ -137,9 +168,11 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     final int index;
     if (resets.isEmpty()) {
       index = currentIndex++;
+      m_maxDocId.set(index, shard.tagSet());
     } else {
       index = resets.first();
       resets.remove(index);
+      m_freeDocs.set(resets.getLongCardinality(), shard.tagSet());
     }
 
     if (index == maxCapacity) {
@@ -153,6 +186,7 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     if (tableIndex + 1 > tables.size()) { // grow table.
       docs = new long[initialCapacity];
       tables.add(docs);
+      m_tablesCount.set(tables.size(), shard.tagSet());
     } else {
       docs = tables.get(tableIndex);
     }
@@ -164,17 +198,31 @@ public class NewDocStore implements MetaDataStore, ShardAware {
       String tagValue = tagValues[i];
 
       Map<String, RoaringBitmap> valueMap =
-          this.indexMap.computeIfAbsent(tagKey, (v) -> new HashMap<>());
+          this.indexMap.computeIfAbsent(tagKey, (v) -> {
+                  this.tagKeys++;
+                  tagKeyBytes += tagKey.length();
+                  return new HashMap<>();
+           });
 
       RoaringBitmap rr = valueMap.get(tagValue);
       if (rr == null) {
-        valueMap.put(tagValue, RoaringBitmap.bitmapOf(index));
+        rr = RoaringBitmap.bitmapOf(index);
+        valueMap.put(tagValue, rr);
+        this.tagValues++;
+        tagValueBytes += tagValue.length();
+        rrSizeBytes += rr.getSizeInBytes();
       } else {
+        int prev = rr.getSizeInBytes();
         rr.add(index);
+        int delta = rr.getSizeInBytes() - prev;
+        if (delta > 0) {
+          rrSizeBytes += delta;
+        }
       }
     }
 
     size++;
+    updateStats();
   }
 
 //  // TODO: Change from BaseMetricEvent to MetricEvent?
@@ -243,9 +291,11 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     final int index;
     if (resets.isEmpty()) {
       index = currentIndex++;
+      m_maxDocId.set(index, shard.tagSet());
     } else {
       index = resets.first();
       resets.remove(index);
+      m_freeDocs.set(resets.getLongCardinality(), shard.tagSet());
     }
 
     if (index == maxCapacity) {
@@ -259,6 +309,7 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     if (tableIndex + 1 > tables.size()) { // grow table.
       docs = new long[initialCapacity];
       tables.add(docs);
+      m_tablesCount.set(tables.size(), shard.tagSet());
     } else {
       docs = tables.get(tableIndex);
     }
@@ -275,30 +326,56 @@ public class NewDocStore implements MetaDataStore, ShardAware {
               container.tagValueLength(),
               StandardCharsets.UTF_8); // tagValues[i]
       Map<String, RoaringBitmap> valueMap =
-          this.indexMap.computeIfAbsent(tagKey, (v) -> new HashMap<>());
+          this.indexMap.computeIfAbsent(tagKey, (v) -> {
+            this.tagKeys++;
+            tagKeyBytes += tagKey.length();
+            return new HashMap<>();
+          });
 
       RoaringBitmap rr = valueMap.get(tagValue);
       if (rr == null) {
-        valueMap.put(tagValue, RoaringBitmap.bitmapOf(index));
+        rr = RoaringBitmap.bitmapOf(index);
+        valueMap.put(tagValue, rr);
+        this.tagValues++;
+        tagValueBytes += tagValue.length();
+        rrSizeBytes += rr.getSizeInBytes();
       } else {
+        int prev = rr.getSizeInBytes();
         rr.add(index);
+        int delta = rr.getSizeInBytes() - prev;
+        if (delta > 0) {
+          rrSizeBytes += delta;
+        }
       }
     }
 
     if (metaQueryEnabled && container instanceof LowLevelMetricData) {
-      Map<String, RoaringBitmap> valueMap =
-          this.indexMap.computeIfAbsent(METRICS, (v) -> new HashMap<>());
       String m =
-          new String(
-              container.metricBuffer(), container.metricStart(), container.metricLength(), StandardCharsets.UTF_8);
+              new String(
+                      container.metricBuffer(), container.metricStart(), container.metricLength(), StandardCharsets.UTF_8);
+      Map<String, RoaringBitmap> valueMap =
+          this.indexMap.computeIfAbsent(METRICS, (v) -> {
+            this.metrics++;
+            metricBytes += m.length();
+            return new HashMap<>();
+          });
       RoaringBitmap rr = valueMap.get(m);
       if (rr == null) {
-        valueMap.put(m, RoaringBitmap.bitmapOf(index));
+        rr = RoaringBitmap.bitmapOf(index);
+        valueMap.put(m, rr);
+        // not counting the extra ref.
+        rrSizeBytes += rr.getSizeInBytes();
       } else {
+        int prev = rr.getSizeInBytes();
         rr.add(index);
+        int delta = rr.getSizeInBytes() - prev;
+        if (delta > 0) {
+          rrSizeBytes += delta;
+        }
       }
     }
     size++;
+    updateStats();
   }
 
   /**
@@ -451,16 +528,28 @@ public class NewDocStore implements MetaDataStore, ShardAware {
       return;
     }
 
-    Map<String, RoaringBitmap> valueMap =
-        this.indexMap.computeIfAbsent(METRICS, (v) -> new HashMap<>());
     String m =
-        new String(
-            container.metricBuffer(), container.metricStart(), container.metricLength(), StandardCharsets.UTF_8);
+            new String(
+                    container.metricBuffer(), container.metricStart(), container.metricLength(), StandardCharsets.UTF_8);
+    Map<String, RoaringBitmap> valueMap =
+        this.indexMap.computeIfAbsent(METRICS, (v) -> {
+          this.metrics++;
+          metricBytes += m.length();
+          return new HashMap<>();
+        });
     RoaringBitmap rr = valueMap.get(m);
     if (rr == null) {
-      valueMap.put(m, RoaringBitmap.bitmapOf(index));
+      rr = RoaringBitmap.bitmapOf(index);
+      valueMap.put(m, rr);
+      // not counting the extra ref.
+      rrSizeBytes += rr.getSizeInBytes();
     } else {
+      int prev = rr.getSizeInBytes();
       rr.add(index);
+      int delta = rr.getSizeInBytes() - prev;
+      if (delta > 0) {
+        rrSizeBytes += delta;
+      }
     }
   }
 
@@ -505,6 +594,9 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     long sortLatency = System.nanoTime() - start;
     logger.info("DocIdBatch sort and search shardId: {} batchSize: {} match: {} latency: {} ns docStoreSize: {}", shard.getId(), batchSize, n, sortLatency, size);
 
+    AtomicInteger deletedValues = new AtomicInteger();
+    AtomicInteger deletedKeys = new AtomicInteger();
+    int deletedMetrics = 0;
     AtomicLong tagPurgeLatency = new AtomicLong();
     for (int i = 0; i < n; i++) {
       int tableIndex = tableIndices[i];
@@ -518,17 +610,33 @@ public class NewDocStore implements MetaDataStore, ShardAware {
         long s = System.nanoTime();
         Map<String, RoaringBitmap> valueMap = indexMap.get(tagKey);
         RoaringBitmap bitmap = valueMap.get(tagValue);
+        int sz = bitmap.getSizeInBytes();
         bitmap.remove(index);
         if (bitmap.isEmpty()) {
           valueMap.remove(tagValue);
+          deletedValues.incrementAndGet();
+          this.tagValues--;
+          tagValueBytes -= tagValue.length();
+          rrSizeBytes -= sz;
+        } else {
+          bitmap.runOptimize();
+          int delta = sz - bitmap.getSizeInBytes();
+          if (delta > 0) {
+            rrSizeBytes -= sz;
+          }
         }
+
         if (valueMap.isEmpty()) {
           indexMap.remove(tagKey);
+          tagKeys--;
+          tagKeyBytes -= tagKey.length();
+          deletedKeys.incrementAndGet();
         }
         tagPurgeLatency.getAndAdd(System.nanoTime() - s);
       });
 
       resets.add(index);
+      m_freeDocs.set(resets.getLongCardinality(), shard.tagSet());
       tables.get(tableIndex)[docIndex] = 0;
       size--;
     }
@@ -548,20 +656,36 @@ public class NewDocStore implements MetaDataStore, ShardAware {
         histo[3] = Math.max(histo[3], sizeInBytes);
         for (int i = 0; i < n; i++) {
           int index = indices[i];
+          int sz = rr.getSizeInBytes();
           rr.remove(index);
+          if (rr.isEmpty()) {
+            iterator.remove();
+            metrics--;
+            metricBytes -= metric.getKey().length();
+            rrSizeBytes -= sz;
+            deletedMetrics++;
+          } else {
+            rr.runOptimize();
+            int delta = sz - rr.getSizeInBytes();
+            if (delta > 0) {
+              rrSizeBytes -= delta;
+            }
+          }
         }
-        if (rr.isEmpty()) {
-          iterator.remove();
-        }
+
       }
     }
     long metricPurgeLatency = System.nanoTime() - s;
     long totalLatency = System.nanoTime() - start;
     long tagParseLatency = totalLatency - (sortLatency + tagPurgeLatency.get() + metricPurgeLatency);
 
-    logger.info("DocIdBatch remove latency shardId: {} batchSize: {} total latency: {} batch sort/search latency: {} tagPurge latency: {} metricPurge latency: {}  tagParse latency: {} ns metricBitmapSizes: {} docStoreSize: {}",
-        shard.getId(), batchSize, totalLatency, sortLatency, tagPurgeLatency.get(), metricPurgeLatency, tagParseLatency, Arrays.toString(histo), size);
-
+    logger.info("DocIdBatch remove latency shardId: {} batchSize: {} total latency: {} " +
+                    "batch sort/search latency: {} tagPurge latency: {} " +
+                    "metricPurge latency: {}  tagParse latency: {} ns metricBitmapSizes: {} " +
+                    "docStoreSize: {} Deleted Keys {} Values {} Metrics {}",
+        shard.getId(), batchSize, totalLatency, sortLatency, tagPurgeLatency.get(), metricPurgeLatency, tagParseLatency, Arrays.toString(histo), size,
+            deletedKeys.get(), deletedValues.get(), deletedMetrics);
+updateStats();
   }
 
   public boolean remove(final long docId, final byte[] tagBuffer, final int offset, final int length) {
@@ -591,12 +715,23 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     Util.parseTags(tagBuffer, offset, length, (tagKey, tagValue) -> {
       Map<String, RoaringBitmap> valueMap = indexMap.get(tagKey);
       RoaringBitmap bitmap = valueMap.get(tagValue);
+      int sz = bitmap.getSizeInBytes();
       bitmap.remove(index);
+      bitmap.runOptimize();
+      int delta = sz - bitmap.getSizeInBytes();
+      if (delta > 0) {
+        rrSizeBytes -= delta;
+      }
+
       if (bitmap.isEmpty()) {
         valueMap.remove(tagValue);
+        tagValues--;
+        tagValueBytes -= tagValue.length();
       }
       if (valueMap.isEmpty()) {
         indexMap.remove(tagKey);
+        tagKeys--;
+        tagKeyBytes -= tagKey.length();
       }
     });
 
@@ -606,15 +741,25 @@ public class NewDocStore implements MetaDataStore, ShardAware {
       Iterator<Entry<String, RoaringBitmap>> iterator = valueMap.entrySet().iterator();
       while (iterator.hasNext()) {
         final Entry<String, RoaringBitmap> metric = iterator.next();
+        int sz = metric.getValue().getSizeInBytes();
         metric.getValue().remove(index);
+        metric.getValue().runOptimize();
+        int delta = sz - metric.getValue().getSizeInBytes();
+        if (delta > 0) {
+          rrSizeBytes -= delta;
+        }
+
         if (metric.getValue().isEmpty()) {
           iterator.remove();
+          metrics--;
+          metricBytes -= metric.getKey().length();
         }
       }
     }
     resets.add(index);
     tables.get(tableIndex)[docIndex] = 0;
     size--;
+    updateStats();
     return true;
   }
 
@@ -1635,4 +1780,14 @@ public class NewDocStore implements MetaDataStore, ShardAware {
     }
   }
 
+  void updateStats() {
+    m_rrSizeBytes.set(rrSizeBytes, shard.tagSet());
+    m_tagKeys.set(tagKeys, shard.tagSet());
+    m_tagKeyBytes.set(tagKeyBytes, shard.tagSet());
+    m_tagValues.set(tagValues, shard.tagSet());
+    m_tagValueBytes.set(tagValueBytes, shard.tagSet());
+    m_metrics.set(metrics, shard.tagSet());
+    m_metricBytes.set(metricBytes, shard.tagSet());
+
+  }
 }

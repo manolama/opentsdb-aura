@@ -18,6 +18,7 @@
 package net.opentsdb.aura.metrics.core;
 
 import net.opentsdb.collections.DirectByteArray;
+import net.opentsdb.utils.OffHeapDebugAllocator;
 
 /**
  * Index layout:
@@ -42,14 +43,17 @@ public class OffHeapTimeSeriesRecord implements TimeSeriesRecord {
   protected final int secondsInATimeSeries;
 
   protected DirectByteArray dataBlock;
+  OffHeapDebugAllocator allocator;
 
   public OffHeapTimeSeriesRecord(
       final int segmentsInATimeSeries,
-      final int secondsInASegment) {
+      final int secondsInASegment,
+      OffHeapDebugAllocator allocator) {
     this.recordSizeBytes = SEGMENT_ADDR_BASE_INDEX + (Long.BYTES * segmentsInATimeSeries);
     this.secondsInASegment = secondsInASegment;
     this.secondsInATimeSeries = segmentsInATimeSeries * secondsInASegment;
-    this.dataBlock = new DirectByteArray(0);
+    this.dataBlock = new DirectByteArray(0, true, allocator);
+    this.allocator = allocator;
   }
 
   @Override

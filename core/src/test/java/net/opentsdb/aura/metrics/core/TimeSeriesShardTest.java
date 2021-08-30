@@ -26,6 +26,7 @@ import net.opentsdb.aura.metrics.meta.MetaDataStore;
 import io.ultrabrew.metrics.MetricRegistry;
 import mockit.Injectable;
 import mockit.Verifications;
+import net.opentsdb.collections.LongLongHashTable;
 import net.opentsdb.data.LowLevelMetricData;
 import net.opentsdb.hashing.HashFunction;
 import org.junit.jupiter.api.BeforeAll;
@@ -45,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static net.opentsdb.aura.metrics.TestUtil.buildEvent;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TimeSeriesShardTest {
@@ -56,7 +58,7 @@ public class TimeSeriesShardTest {
 
   protected MetricRegistry metricRegistry = new MetricRegistry();
   protected RawTimeSeriesEncoder encoder;
-  protected TimeSeriesShardIF shard;
+  protected TimeSeriesShard shard;
   private TimeseriesStorageContext storageContext;
 
   @Injectable protected MetaDataStore metaDataStore;
@@ -357,6 +359,7 @@ public class TimeSeriesShardTest {
     double[] values = new double[] {54.59};
 
     String metric = "request.count";
+    String metric2 = "query.count";
     Map<String, String> tags =
         new HashMap() {
           {
@@ -366,7 +369,15 @@ public class TimeSeriesShardTest {
         };
 
     LowLevelMetricData.HashedLowLevelMetricData eventStale = buildEvent(metric, tags, timeStamps, values);
+    LowLevelMetricData.HashedLowLevelMetricData event = buildEvent(metric2, tags, new int[] {now}, values);
     shard.addEvent(eventStale);
+    shard.addEvent(event);
+
+    long eventStaleHash = eventStale.timeSeriesHash();
+    long eventHash = event.timeSeriesHash();
+
+    assertNotEquals(LongLongHashTable.NOT_FOUND, shard.timeSeriesTable.get(eventStaleHash));
+    assertNotEquals(LongLongHashTable.NOT_FOUND, shard.timeSeriesTable.get(eventHash));
 
     AtomicInteger index = new AtomicInteger();
     shard.readAll(eventStale.timeSeriesHash(), (t, v, d) -> index.getAndIncrement());
@@ -378,6 +389,8 @@ public class TimeSeriesShardTest {
     index.set(0);
     shard.readAll(eventStale.timeSeriesHash(), (t, v, d) -> index.getAndIncrement());
     assertEquals(0, index.get());
+    assertEquals(LongLongHashTable.NOT_FOUND, shard.timeSeriesTable.get(eventStaleHash));
+    assertNotEquals(LongLongHashTable.NOT_FOUND, shard.timeSeriesTable.get(eventHash));
 
     new Verifications() {
       {

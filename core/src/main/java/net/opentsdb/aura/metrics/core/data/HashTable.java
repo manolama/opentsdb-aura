@@ -17,6 +17,9 @@
 
 package net.opentsdb.aura.metrics.core.data;
 
+import net.opentsdb.aura.metrics.core.OffHeapTimeSeriesRecord;
+import net.opentsdb.utils.OffHeapDebugAllocator;
+
 /**
  * Ensure the size is at least 30% larger than expected max size. Note: This will take 10 * size
  * bytes of memory for the allocated size + the size of actual entries stored. I.e. if you allocate
@@ -31,12 +34,14 @@ public class HashTable {
   public static final int valSz = 12;
 
   private byte[] pointerBuffer = new byte[valSz];
+  OffHeapDebugAllocator allocator;
 
   /**
    * @param name
    * @param size number of entries. WARNING: use ~30% larger value than expected max size to avoid
    */
-  public HashTable(String name, int size) {
+  public HashTable(String name, int size, OffHeapDebugAllocator allocator) {
+    this.allocator = allocator;
     lookupTable = new LinearProbingHashTable(size, valSz, name);
   }
 
@@ -57,7 +62,7 @@ public class HashTable {
       update(key, pointer, data);
     } else {
       sz++;
-      long addr = Memory.malloc(length);
+      long addr = allocator.allocate(length);//Memory.malloc(length);
 
       pointer = pointerBuffer;
       ByteArrays.putLong(addr, pointer, 0);
@@ -76,8 +81,9 @@ public class HashTable {
     int oldLength = ByteArrays.getInt(pointer, 8);
 
     if (oldLength != data.length) {
-      Memory.free(oldAddr);
-      long addr = Memory.malloc(data.length);
+      //Memory.free(oldAddr);
+      allocator.free(this, oldAddr);
+      long addr = allocator.allocate(data.length);//Memory.malloc(data.length);
       Memory.write(addr, data, data.length);
 
       ByteArrays.putLong(addr, pointer, 0);
